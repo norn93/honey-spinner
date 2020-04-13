@@ -38,27 +38,35 @@ float stepperMaxSpeed = 0.005; //m/s
 float stepperMaxAcceleration = 0.04; //m/s^2
 float stepperMinSpeed = 0.0001; //speed to below to allow up to have arrived
 float stepperSmoothingFactor = 1.2; //fudge factor to prevent overshoot
+bool stepperResetOnStop = true; // false if you want holding force
+float stepperMaximumPosition = 1.0; // maximum position in metres
+float stepperMinimumPosition = 0.0; // minimum position in metres
 
 // STEPPER INITIAL CONDITIONS
 float stepperPositionMetres = 0.87; //m
 float stepperVelocity = 0.0; //m/s
 float stepperAcceleration = 0.0; //m/s^2
 
-// STEPPER SETPOINT
-float stepperSetpoint; //setpoint position in meters
-
 // STEPPER RATIOS
 float stepperStepsPerRevolution = 200 * stepperMicroStepping; //how many steps it takes to do a revolution
 float stepperMetresPerRevolution = 0.002; // pitch of the screw
 
+// STEPPER SETPOINT
+float stepperSetpoint; //setpoint position in meters
 long int setpointSteps; //out current setpoint position in steps
-long int stepperPositionSteps = round(stepperPositionMetres * stepperStepsPerRevolution / stepperMetresPerRevolution);
-//the current position of the stepper in steps, assume we start in middle of 1 m section
+long int stepperPositionSteps = round(stepperPositionMetres * stepperStepsPerRevolution / stepperMetresPerRevolution); //the current position of the stepper in steps
 
 void setStepperPosition(float setpoint) {
+
+  // Clamp the setpoint to bounds
+  setpoint = min(max(stepperMinimumPosition, setpoint), stepperMaximumPosition);
+  
   // Set the current setpoint for the motor
   stepperArrived = false;
+  
+  // Enable the stepper
   digitalWrite(STEPPER_RESET, LOW);
+
   if (setpoint != stepperSetpoint) { //only update the setpoint if it's different
     stepperSetpoint = setpoint;
     setpointSteps = round(stepperSetpoint / (stepperMetresPerRevolution / stepperStepsPerRevolution));
@@ -72,7 +80,9 @@ void updateStepper() {
 
   // Check if we've arrived
   if (stepperPositionSteps == setpointSteps && stepperVelocity < stepperMinSpeed) {
-    digitalWrite(STEPPER_RESET, HIGH);
+    if (stepperResetOnStop) {
+      digitalWrite(STEPPER_RESET, HIGH);
+    }
     stepperArrived = true;
   }
 
@@ -202,7 +212,8 @@ void setup() {
     }
     digitalWrite(STEPPER_RESET, LOW);
     Serial.println("Steppers enabled!");
-    //Serial.println(millis());
+
+    // Set the first setpoint to the current position
     setStepperPosition(stepperPositionMetres);
   }
 
@@ -221,7 +232,6 @@ void loop() {
     if (sentChar != inChar) {
       sentChar = inChar;
 
-
       // First, stop listening so we can talk.
       radio.stopListening();
 
@@ -235,88 +245,13 @@ void loop() {
       } data;
 
       data.asFloat = setpoint;
+
+      // Temporary hack to make the position update in a useful way
       data.asBytes[2] = inChar;
-
-      //Serial.println(sizeof(setpoint));
-
-      //    Serial.println("Unpacking an unsigned long example:");
-      //    char byte1, byte2, byte3, byte4;
-      //    byte1 = start_time;
-      //    byte2 = start_time >> 8;
-      //    byte3 = start_time >> 16;
-      //    byte4 = start_time >> 24;
-      //    Serial.println((unsigned char)byte1);
-      //    Serial.println((unsigned char)byte2);
-      //    Serial.println((unsigned char)byte3);
-      //    Serial.println((unsigned char)byte4);
-
-      // Pack up data
-      //byte dataSend[PAYLOAD_SIZE];
-      //dataSend = data.asBytes;
-      //    data[1] = setpoint >> 8 * 1;
-      //    data[2] = setpoint >> 8 * 2;
-      //    data[3] = setpoint >> 8 * 3;
-
-      //    Serial.println((int)data.asBytes[0]);
-      //    Serial.println((int)data.asBytes[1]);
-      //    Serial.println((int)data.asBytes[2]);
-      //    Serial.println((int)data.asBytes[3]);
-
 
       if (!radio.write(&data.asBytes, sizeof(data.asBytes))) {
         Serial.println("failed");
       }
-
-      // Now, continue listening
-      //    radio.startListening();
-      //
-      //    // Set up a timeout period, get the current microseconds
-      //    unsigned long started_waiting_at = micros();
-      //    // Set up a variable to indicate if a response was received or not
-      //    boolean timeout = false;
-      //
-      //    // While nothing is received
-      //    while (!radio.available()) {
-      //      if (micros() - started_waiting_at > 200000 ) {
-      //        // If waited longer than 200ms, indicate timeout and exit while loop
-      //        timeout = true;
-      //        break;
-      //      }
-      //    }
-      //
-      //    // Describe the results
-      //    if (timeout) {
-      //      Serial.println("Failed, response timed out.");
-      //    } else {
-      //      // Grab the response, compare, and send to debugging spew
-      //
-      //      byte data_in[PAYLOAD_SIZE];
-      //      radio.read(&data_in, PAYLOAD_SIZE);
-      //
-      //      unsigned long end_time = micros();
-      //
-      //      // Get the time, in the first 4 bytes
-      //      unsigned long got_time;
-      //      got_time = (unsigned long)data_in;
-      //
-      //      // Get the second two results
-      //      char result1, result2;
-      //      result1 = data_in[4];
-      //      result2 = data_in[5];
-      //
-      //      // Spew it
-      //      Serial.print("Sent ");
-      //      Serial.print(start_time);
-      //      Serial.print(", Got response ");
-      //      Serial.print(got_time);
-      //      Serial.print(", Round-trip delay ");
-      //      Serial.print(end_time - start_time);
-      //      Serial.println(" microseconds");
-      //      Serial.print("Result1: ");
-      //      Serial.println((unsigned char)result1);
-      //      Serial.print("Result2: ");
-      //      Serial.println((unsigned char)result2);
-      //    }
 
       // Serial input
       Serial.print("inChar: ");
@@ -324,9 +259,6 @@ void loop() {
       Serial.println(data.asFloat, 10);
 
     }
-
-    // Try again 1s later
-    delay(1);
 
   } else if (radioNumber == 1) {
 
@@ -353,10 +285,6 @@ void loop() {
       Serial.println(data.asFloat, 10);
 
       setStepperPosition(data.asFloat);
-
-      //      radio.stopListening();
-      //      radio.write(&data, PAYLOAD_SIZE);
-      //      radio.startListening();
     }
 
   } else if (radioNumber == 2) {
