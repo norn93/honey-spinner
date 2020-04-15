@@ -9,22 +9,40 @@
 #define STEPPER_MS1 6
 #define STEPPER_MS2 5
 
+#define RADIO_1 7 //TODO, name these
+#define RADIO_2 8
+
 #define LOAD_CELL_DT_PIN A4
 #define LOAD_CELL_SCK_PIN A3
 
-#define PAYLOAD_SIZE 4
+#define LIMIT_UPPER_PIN A0
+#define LIMIT_LOWER_PIN A1
+
+// Custom data types
+union mixedValue {
+  bool asBool;
+  char asChar;
+  int asInt;
+  float asFloat;
+  long int asLongInt;
+};
+
+struct parameterPair {
+  char id;
+  mixedValue value;
+};
 
 // 0 = 1Node is Parent
 // 1 = 2Node is Child
 // 2 = stepper practice
 // 3 = load cell practice
+// 4 = calibration practice
 byte addresses[][6] = {"1Node", "2Node"};
 int radioNumber = 1;
 
 // STEPPER TIMING
 unsigned long stepperLastStep; //last time we stepped
 unsigned long stepperLastUpdate; //last time we updated accel
-long int stepperVelocityUpdateInterval = 10000; //how often we update our velocity calculation
 long int stepperDelay; //how long do we wait between stepper pulses
 
 // STEPPER STATE
@@ -32,10 +50,11 @@ bool stepperState; //is the stepper at a 1 or 0?
 bool stepperArrived = false; //are we at our destination?
 
 // STEPPER OPTIONS
+long int stepperVelocityUpdateInterval = 10000; //how often we update our velocity calculation
 bool stepperInvertDirection = true; //which way do we want to be positive/negative
 int stepperMicroStepping = 1; //microstepping factor 1/n
-float stepperMaxSpeed = 0.005; //m/s
-float stepperMaxAcceleration = 0.04; //m/s^2
+float stepperMaxSpeed = 0.001; //m/s 0.005 is more comfortable
+float stepperMaxAcceleration = 0.0004; //m/s^2 //try 0.04
 float stepperMinSpeed = 0.0001; //speed to below to allow up to have arrived
 float stepperSmoothingFactor = 1.2; //fudge factor to prevent overshoot
 bool stepperResetOnStop = true; // false if you want holding force
@@ -43,7 +62,7 @@ float stepperMaximumPosition = 1.0; // maximum position in metres
 float stepperMinimumPosition = 0.0; // minimum position in metres
 
 // STEPPER INITIAL CONDITIONS
-float stepperPositionMetres = 0.87; //m
+float stepperPositionMetres = 0.0; //m
 float stepperVelocity = 0.0; //m/s
 float stepperAcceleration = 0.0; //m/s^2
 
@@ -54,16 +73,169 @@ float stepperMetresPerRevolution = 0.002; // pitch of the screw
 // STEPPER SETPOINT
 float stepperSetpoint; //setpoint position in meters
 long int setpointSteps; //out current setpoint position in steps
-long int stepperPositionSteps = round(stepperPositionMetres * stepperStepsPerRevolution / stepperMetresPerRevolution); //the current position of the stepper in steps
+long int stepperPositionSteps; //the current position of the stepper in steps
+
+// STEPPER CALIBRATION
+char stepperCalibrationState = 'c';
+char stepperLastCalibrationState = ' ';
+// n not calibrated
+// l calibrating lower
+// u calibrating upper
+// c calibrated
+bool stepperOverrideButton = false;
+float stepperCalibrationClearance = 0.001; //m
+
+// LOAD CELL
+const int loadCellBufferSize = 8;
+long int loadCellBuffer[loadCellBufferSize];
+
+// Radio
+RF24 radio(RADIO_1, RADIO_2);
+
+// Load cell
+HX711 loadcell;
+
+void setup() {
+  // Get everything going
+  Serial.begin(115200);
+  radio.begin();
+
+  // Set the radio to low
+  radio.setPALevel(RF24_PA_LOW);
+
+  // Open a writing and reading pipe on each radio, with opposite addresses
+  if (radioNumber) {
+    radio.openWritingPipe(addresses[1]);
+    radio.openReadingPipe(1, addresses[0]);
+  } else {
+    radio.openWritingPipe(addresses[0]);
+    radio.openReadingPipe(1, addresses[1]);
+  }
+
+  // Start the radio listening for data
+  radio.startListening();
+
+  // Check the chip is connected
+  if (radio.isChipConnected()) {
+    Serial.println("Connected to radio!");
+  } else {
+    Serial.println("Not connected...");
+    while (1) {}
+  }
+
+  if (radioNumber == 1 || radioNumber == 2 || radioNumber == 4) {
+    setUpStepper();
+  }
+
+  if (radioNumber == 1 || radioNumber == 3) {
+    loadcell.begin(LOAD_CELL_DT_PIN, LOAD_CELL_SCK_PIN);
+    loadcell.tare();
+    // Optionally perform other calibration
+  }
+
+  if (radioNumber == 1 || radioNumber == 4) {
+    // Set up limit switches
+    pinMode(LIMIT_UPPER_PIN, INPUT);
+    pinMode(LIMIT_LOWER_PIN, INPUT);
+    digitalWrite(LIMIT_LOWER_PIN, HIGH);
+    digitalWrite(LIMIT_UPPER_PIN, HIGH);
+  }
+}
+
+void loop() {
+  if (radioNumber == 0) {
+
+    // First, stop listening so we can talk.
+    radio.stopListening();
+
+    parameterPair sendingParam;
+
+    sendingParam.id = 'C';
+    // Remember to check type of variable
+    sendingParam.value.asFloat = 0.0009;
+
+    if (!radio.write(&sendingParam, sizeof(sendingParam))) {
+      Serial.println("Sending data failed");
+    }
+
+    switch (sendingParam.id) {
+      case 'L':
+        getLoadCellData();
+        Serial.println("Got load cell data!");
+        break;
+    }
+
+    // Delay so we don't spam requests
+    delay(1000);
+
+  } else if (radioNumber == 1) {
+
+    handleCalibration();
+
+    handleStepper();
+
+    handleLoadCell();
+
+    handleRadio();
+
+  } else if (radioNumber == 2) {
+
+    handleStepper();
+
+  } else if (radioNumber == 3) {
+
+    handleLoadCell();
+
+  } else if (radioNumber == 4) {
+
+    handleCalibration();
+
+    handleStepper();
+
+  }
+}
+
+void setUpStepper() {
+  // Set up the stepper
+  pinMode(STEPPER_STEP_PIN, OUTPUT);
+  pinMode(STEPPER_DIR_PIN, OUTPUT);
+  pinMode(STEPPER_MS1, OUTPUT);
+  pinMode(STEPPER_MS2, OUTPUT);
+  pinMode(STEPPER_RESET, OUTPUT);
+  digitalWrite(STEPPER_STEP_PIN, LOW);
+  digitalWrite(STEPPER_DIR_PIN, HIGH);
+  digitalWrite(STEPPER_RESET, HIGH); // Begin with stepper disabled
+  // full step (0,0), half step (1,0), 1/4 step (0,1), and 1/8 step (1,1 : default).
+  if (stepperMicroStepping == 1) {
+    digitalWrite(STEPPER_MS1, LOW);
+    digitalWrite(STEPPER_MS2, LOW);
+  } else if (stepperMicroStepping == 2) {
+    digitalWrite(STEPPER_MS1, HIGH);
+    digitalWrite(STEPPER_MS2, LOW);
+  } else if (stepperMicroStepping == 4) {
+    digitalWrite(STEPPER_MS1, LOW);
+    digitalWrite(STEPPER_MS2, HIGH);
+  } else if (stepperMicroStepping == 8) {
+    digitalWrite(STEPPER_MS1, HIGH);
+    digitalWrite(STEPPER_MS2, HIGH);
+  } else {
+    Serial.println("Invalid microstepping");
+    while (1) {}
+  }
+}
 
 void setStepperPosition(float setpoint) {
 
-  // Clamp the setpoint to bounds
-  setpoint = min(max(stepperMinimumPosition, setpoint), stepperMaximumPosition);
-  
+  Serial.println(setpoint, 10);
+
+  // Clamp the setpoint to bounds if we are calibrated
+  if (stepperCalibrationState == 'c') {
+    setpoint = min(max(stepperMinimumPosition, setpoint), stepperMaximumPosition);
+  }
+
   // Set the current setpoint for the motor
   stepperArrived = false;
-  
+
   // Enable the stepper
   digitalWrite(STEPPER_RESET, LOW);
 
@@ -75,7 +247,7 @@ void setStepperPosition(float setpoint) {
   }
 }
 
-void updateStepper() {
+void handleStepper() {
   //Move the stepper according to the algorithm
 
   // Check if we've arrived
@@ -90,6 +262,9 @@ void updateStepper() {
   if (stepperArrived == true) {
     return;
   }
+
+  // Update derived parameters
+  stepperStepsPerRevolution = 200 * stepperMicroStepping;
 
   // Calculate current position in m
   stepperPositionMetres = stepperPositionSteps * stepperMetresPerRevolution / stepperStepsPerRevolution;
@@ -146,174 +321,174 @@ void updateStepper() {
   }
 }
 
-// Serial input for parent
-char inChar = 'a';
-char sentChar;
+void handleLoadCell() {
 
-// Radio
-RF24 radio(7, 8);
-
-// Load cell
-HX711 loadcell;
-
-void setup() {
-  // Get everything going
-  Serial.begin(115200);
-  radio.begin();
-
-  // Set the radio to low
-  radio.setPALevel(RF24_PA_LOW);
-
-  // Open a writing and reading pipe on each radio, with opposite addresses
-  if (radioNumber) {
-    radio.openWritingPipe(addresses[1]);
-    radio.openReadingPipe(1, addresses[0]);
+  if (loadcell.is_ready()) {
+    long reading = loadcell.read();
+    //Serial.println(reading);
+    addToLoadCellBuffer(reading);
   } else {
-    radio.openWritingPipe(addresses[0]);
-    radio.openReadingPipe(1, addresses[1]);
+    // Do nothing
   }
+}
+
+void addToLoadCellBuffer(long int value) {
+  for (int i = loadCellBufferSize - 1; i > 0; i--) {
+    loadCellBuffer[i] = loadCellBuffer[i - 1];
+  }
+  loadCellBuffer[0] = value;
+}
+
+void sendLoadCellData() {
+  // First, stop listening so we can talk.
+  radio.stopListening();
+
+  if (!radio.write(&loadCellBuffer, sizeof(loadCellBuffer))) {
+    Serial.println("Sending load cell data failed");
+  }
+
+  // Back to how we were
+  radio.startListening();
+}
+
+void getLoadCellData() {
+  // First, stop listening so we can talk.
+  radio.startListening();
+
+  if (radio.available()) {
+    while (radio.available()) {
+      radio.read(&loadCellBuffer, sizeof(loadCellBuffer));
+    }
+  }
+}
+
+void printLoadCellBuffer() {
+  for (int i = 0; i < loadCellBufferSize; i++) {
+    Serial.print(loadCellBuffer[i]);
+    Serial.print(", ");
+  }
+  Serial.println("");
+}
+
+void handleRadio() {
 
   // Start the radio listening for data
   radio.startListening();
 
-  // Check the chip is connected
-  if (radio.isChipConnected()) {
-    Serial.println("Connected to radio!");
+  parameterPair recievedParam;
+
+  if (radio.available()) {
+    while (radio.available()) {
+      radio.read(&recievedParam, sizeof(recievedParam));
+    }
+
+    Serial.print("Recieved instruction id: ");
+    Serial.println(recievedParam.id);
+
+    switch (recievedParam.id) {
+      case 'u':
+        stepperVelocityUpdateInterval = recievedParam.value.asLongInt;
+        break;
+      case 'i':
+        stepperInvertDirection = recievedParam.value.asBool;
+        break;
+      case 'm':
+        stepperMicroStepping = recievedParam.value.asInt;
+        break;
+      case 'v':
+        stepperMaxSpeed = recievedParam.value.asFloat;
+        break;
+      case 's':
+        setStepperPosition(recievedParam.value.asFloat);
+        break;
+      case 'a':
+        stepperMaxAcceleration = recievedParam.value.asFloat;
+        break;
+      case 't':
+        stepperMinSpeed = recievedParam.value.asFloat;
+        break;
+      case 'f':
+        stepperSmoothingFactor = recievedParam.value.asFloat;
+        break;
+      case 'r':
+        stepperResetOnStop = recievedParam.value.asBool;
+        break;
+      case '1':
+        stepperMaximumPosition = recievedParam.value.asFloat;
+        break;
+      case '0':
+        stepperMinimumPosition = recievedParam.value.asFloat;
+        break;
+      case 'p':
+        stepperMetresPerRevolution = recievedParam.value.asFloat;
+        break;
+
+      case 'L':
+        sendLoadCellData();
+        break;
+
+      case 'C':
+        if (stepperCalibrationState == 'c') {
+          stepperCalibrationState = 'n';
+          stepperLastCalibrationState = ' ';
+        }
+        break;
+
+      case 'c':
+        stepperCalibrationClearance = recievedParam.value.asFloat;
+        break;
+    }
+  }
+}
+
+void handleCalibration() {
+
+  if (stepperCalibrationState == 'c') {
+    return; // Do nothing
+  }
+  bool upper = digitalRead(LIMIT_UPPER_PIN);
+  bool lower = digitalRead(LIMIT_LOWER_PIN);
+
+  if (stepperCalibrationState != stepperLastCalibrationState) {
+//    Serial.print("Changing step: ");
+//    Serial.println(stepperCalibrationState);
+    switch (stepperCalibrationState) {
+      case 'n':
+        // If we're not calibrated, start by moving backwards towards the end
+        setStepperPosition(-1);
+        break;
+      case 'l':
+        // When we hit the low switch
+        stepperPositionSteps = 0;
+        stepperMinimumPosition = stepperCalibrationClearance;
+        stepperOverrideButton = true;
+        setStepperPosition(1);
+        break;
+      case 'u':
+        stepperMaximumPosition = stepperPositionMetres - stepperCalibrationClearance;
+        stepperOverrideButton = true;
+        stepperCalibrationState = 'c';
+        setStepperPosition((stepperMaximumPosition - stepperMinimumPosition) / 2);
+        break;
+    }
+    stepperLastCalibrationState = stepperCalibrationState;
+  }
+
+  // Have we hit a button?
+  if ( (upper == 0 || lower == 0) and stepperOverrideButton == false) {
+    stepperVelocity = 0;
+    //setStepperPosition(0);
+    if (upper == 0) {
+      stepperCalibrationState = 'u';
+    } else if (lower == 0) {
+      stepperCalibrationState = 'l';
+    }
   } else {
-    Serial.println("Not connected...");
-    while (1) {}
+    stepperOverrideButton = false;
   }
 
-  if (radioNumber == 1 || radioNumber == 2) {
-    // Set up the stepper
-    pinMode(STEPPER_STEP_PIN, OUTPUT);
-    pinMode(STEPPER_DIR_PIN, OUTPUT);
-    pinMode(STEPPER_MS1, OUTPUT);
-    pinMode(STEPPER_MS2, OUTPUT);
-    pinMode(STEPPER_RESET, OUTPUT);
-    digitalWrite(STEPPER_STEP_PIN, LOW);
-    digitalWrite(STEPPER_DIR_PIN, HIGH);
-    // full step (0,0), half step (1,0), 1/4 step (0,1), and 1/8 step (1,1 : default).
-    if (stepperMicroStepping == 1) {
-      digitalWrite(STEPPER_MS1, LOW);
-      digitalWrite(STEPPER_MS2, LOW);
-    } else if (stepperMicroStepping == 2) {
-      digitalWrite(STEPPER_MS1, HIGH);
-      digitalWrite(STEPPER_MS2, LOW);
-    } else if (stepperMicroStepping == 4) {
-      digitalWrite(STEPPER_MS1, LOW);
-      digitalWrite(STEPPER_MS2, HIGH);
-    } else if (stepperMicroStepping == 8) {
-      digitalWrite(STEPPER_MS1, HIGH);
-      digitalWrite(STEPPER_MS2, HIGH);
-    } else {
-      Serial.println("Invalid microstepping");
-      while (1) {}
-    }
-    digitalWrite(STEPPER_RESET, LOW);
-    Serial.println("Steppers enabled!");
-
-    // Set the first setpoint to the current position
-    setStepperPosition(stepperPositionMetres);
-  }
-
-  if (radioNumber == 1 || radioNumber == 3) {
-    loadcell.begin(LOAD_CELL_DT_PIN, LOAD_CELL_SCK_PIN);
-    //    Serial.println(micros());
-    //    Serial.println(micros());
-    //    Serial.println(loadcell.get_units(10), 2);
-    //    Serial.println(micros());
-  }
-}
-
-void loop() {
-  if (radioNumber == 0) {
-
-    if (sentChar != inChar) {
-      sentChar = inChar;
-
-      // First, stop listening so we can talk.
-      radio.stopListening();
-
-      // Take the time, and send it.  This will block until complete
-      Serial.println("Now sending");
-      float setpoint = stepperPositionMetres;
-
-      union {
-        byte asBytes[4];
-        float asFloat;
-      } data;
-
-      data.asFloat = setpoint;
-
-      // Temporary hack to make the position update in a useful way
-      data.asBytes[2] = inChar;
-
-      if (!radio.write(&data.asBytes, sizeof(data.asBytes))) {
-        Serial.println("failed");
-      }
-
-      // Serial input
-      Serial.print("inChar: ");
-      Serial.println(inChar);
-      Serial.println(data.asFloat, 10);
-
-    }
-
-  } else if (radioNumber == 1) {
-
-    updateStepper();
-
-    byte receivedData[PAYLOAD_SIZE];
-
-    union {
-      byte asBytes[4];
-      float asFloat;
-    } data;
-
-    if ( radio.available()) {
-      // Variable for the received timestamp
-      while (radio.available()) {
-        radio.read(&receivedData, 4);
-      }
-
-      data.asBytes[0] = receivedData[0];
-      data.asBytes[1] = receivedData[1];
-      data.asBytes[2] = receivedData[2];
-      data.asBytes[3] = receivedData[3];
-
-      Serial.println(data.asFloat, 10);
-
-      setStepperPosition(data.asFloat);
-    }
-
-  } else if (radioNumber == 2) {
-
-    updateStepper();
-
-  } else if (radioNumber == 3) {
-    if (loadcell.is_ready()) {
-      long reading = loadcell.read();
-      //Serial.print("HX711 reading: ");
-      Serial.println(sizeof(reading));
-      Serial.println(reading);
-    } else {
-      //Serial.println("HX711 not found.");
-    }
-  }
-}
-
-void serialEvent() {
-  //Serial.println("got serial");
-  if (radioNumber == 0) {
-    while (Serial.available()) {
-      // get the new byte:
-      char lastChar = inChar;
-      inChar = (char)Serial.read();
-
-      if (inChar == '\n') {
-        inChar = lastChar;
-      }
-    }
+  // If we're clear of the button, then turn off the button override
+  if ((upper == 1 && lower == 1) && stepperOverrideButton == true) {
+    stepperOverrideButton = false;
   }
 }
