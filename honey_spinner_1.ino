@@ -53,8 +53,8 @@ bool stepperArrived = false; //are we at our destination?
 long int stepperVelocityUpdateInterval = 10000; //how often we update our velocity calculation
 bool stepperInvertDirection = true; //which way do we want to be positive/negative
 int stepperMicroStepping = 1; //microstepping factor 1/n
-float stepperMaxSpeed = 0.001; //m/s 0.005 is more comfortable
-float stepperMaxAcceleration = 0.0004; //m/s^2 //try 0.04
+float stepperMaxSpeed = 0.005; //m/s 0.005 is more comfortable
+float stepperMaxAcceleration = 0.04; //m/s^2 //try 0.04
 float stepperMinSpeed = 0.0001; //speed to below to allow up to have arrived
 float stepperSmoothingFactor = 1.2; //fudge factor to prevent overshoot
 bool stepperResetOnStop = true; // false if you want holding force
@@ -76,13 +76,13 @@ long int setpointSteps; //out current setpoint position in steps
 long int stepperPositionSteps; //the current position of the stepper in steps
 
 // STEPPER CALIBRATION
-char stepperCalibrationState = 'c';
-char stepperLastCalibrationState = ' ';
-// n not calibrated
-// l calibrating lower
-// u calibrating upper
+char stepperCalibrationState = 'n';
+// n not calibrated, starting position
+// s state variable enabled
 // c calibrated
-bool stepperOverrideButton = false;
+bool stepperCalibrationMovementDirection = false;
+// false is towards the low
+// true is towards the high
 float stepperCalibrationClearance = 0.001; //m
 
 // LOAD CELL
@@ -225,8 +225,6 @@ void setUpStepper() {
 }
 
 void setStepperPosition(float setpoint) {
-
-  Serial.println(setpoint, 10);
 
   // Clamp the setpoint to bounds if we are calibrated
   if (stepperCalibrationState == 'c') {
@@ -430,7 +428,6 @@ void handleRadio() {
       case 'C':
         if (stepperCalibrationState == 'c') {
           stepperCalibrationState = 'n';
-          stepperLastCalibrationState = ' ';
         }
         break;
 
@@ -446,49 +443,46 @@ void handleCalibration() {
   if (stepperCalibrationState == 'c') {
     return; // Do nothing
   }
-  bool upper = digitalRead(LIMIT_UPPER_PIN);
-  bool lower = digitalRead(LIMIT_LOWER_PIN);
 
-  if (stepperCalibrationState != stepperLastCalibrationState) {
-//    Serial.print("Changing step: ");
-//    Serial.println(stepperCalibrationState);
-    switch (stepperCalibrationState) {
-      case 'n':
-        // If we're not calibrated, start by moving backwards towards the end
-        setStepperPosition(-1);
-        break;
-      case 'l':
-        // When we hit the low switch
-        stepperPositionSteps = 0;
-        stepperMinimumPosition = stepperCalibrationClearance;
-        stepperOverrideButton = true;
-        setStepperPosition(1);
-        break;
-      case 'u':
-        stepperMaximumPosition = stepperPositionMetres - stepperCalibrationClearance;
-        stepperOverrideButton = true;
-        stepperCalibrationState = 'c';
-        setStepperPosition((stepperMaximumPosition - stepperMinimumPosition) / 2);
-        break;
-    }
-    stepperLastCalibrationState = stepperCalibrationState;
-  }
+  bool upper = !digitalRead(LIMIT_UPPER_PIN);
+  bool lower = !digitalRead(LIMIT_LOWER_PIN);
 
-  // Have we hit a button?
-  if ( (upper == 0 || lower == 0) and stepperOverrideButton == false) {
+  // first, check where we are
+  if (lower) {
+    // We're at the low side
+    //Serial.println("Low side");
     stepperVelocity = 0;
-    //setStepperPosition(0);
-    if (upper == 0) {
-      stepperCalibrationState = 'u';
-    } else if (lower == 0) {
-      stepperCalibrationState = 'l';
+    stepperPositionSteps = 0;
+    stepperMinimumPosition = stepperCalibrationClearance;
+    setStepperPosition(1);
+    stepperCalibrationState = 's';
+    stepperCalibrationMovementDirection = true;
+  } else if (upper) {
+    //We're at the high side
+    //Serial.println("High side");
+    stepperVelocity = 0;
+    if (stepperCalibrationState == 's') {
+      // Then we're done, go to the middle
+      //Serial.println("Done, going to middle");
+      stepperMaximumPosition = stepperPositionMetres - stepperCalibrationClearance;
+      stepperCalibrationState = 'c';
+      stepperCalibrationMovementDirection = false;
+      setStepperPosition((stepperMaximumPosition - stepperMinimumPosition) / 2);
+    } else {
+      // We need to go the low side first
+      // but we also need to reverse the direction of the motor,
+      // since we went the wrong way
+      //Serial.println("Got to the wrong side, going back to the low side");
+      stepperInvertDirection = !stepperInvertDirection;
+      stepperCalibrationMovementDirection = false;
+      setStepperPosition(-1);
     }
   } else {
-    stepperOverrideButton = false;
-  }
-
-  // If we're clear of the button, then turn off the button override
-  if ((upper == 1 && lower == 1) && stepperOverrideButton == true) {
-    stepperOverrideButton = false;
+    // We don't know where we are
+    if (stepperCalibrationMovementDirection) {
+      setStepperPosition(1);
+    } else {
+      setStepperPosition(-1);
+    }
   }
 }
