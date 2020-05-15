@@ -84,6 +84,11 @@ bool stepperCalibrationMovementDirection = false;
 // false is towards the low
 // true is towards the high
 float stepperCalibrationClearance = 0.001; //m
+unsigned long stepperCalibrationButtonLastPress;
+// The last time we a button was pressed
+unsigned long stepperCalibrationButtonDebounceTime = 1000000; //us
+// Minimum time between button presses
+
 
 // LOAD CELL
 const int loadCellBufferSize = 8;
@@ -131,6 +136,7 @@ void setup() {
     loadcell.begin(LOAD_CELL_DT_PIN, LOAD_CELL_SCK_PIN);
     loadcell.tare();
     // Optionally perform other calibration
+    Serial.println("Load cell set up!");
   }
 
   if (radioNumber == 1 || radioNumber == 4) {
@@ -139,7 +145,10 @@ void setup() {
     pinMode(LIMIT_LOWER_PIN, INPUT);
     digitalWrite(LIMIT_LOWER_PIN, HIGH);
     digitalWrite(LIMIT_UPPER_PIN, HIGH);
+    Serial.println("Limit switches set up!");
   }
+
+  Serial.println("Finished setup!");
 }
 
 void loop() {
@@ -222,6 +231,7 @@ void setUpStepper() {
     Serial.println("Invalid microstepping");
     while (1) {}
   }
+  Serial.println("Stepper set up!");
 }
 
 void setStepperPosition(float setpoint) {
@@ -447,10 +457,18 @@ void handleCalibration() {
   bool upper = !digitalRead(LIMIT_UPPER_PIN);
   bool lower = !digitalRead(LIMIT_LOWER_PIN);
 
+  // Check if we need to ignore the button press
+  if (upper || lower) {
+    if (micros() - stepperCalibrationButtonLastPress < stepperCalibrationButtonDebounceTime) {
+      return; // Do nothing
+    }
+  }
+
   // first, check where we are
   if (lower) {
     // We're at the low side
-    //Serial.println("Low side");
+    Serial.println("Low side limit switch hit");
+    stepperCalibrationButtonLastPress = micros();
     stepperVelocity = 0;
     stepperPositionSteps = 0;
     stepperMinimumPosition = stepperCalibrationClearance;
@@ -459,11 +477,13 @@ void handleCalibration() {
     stepperCalibrationMovementDirection = true;
   } else if (upper) {
     //We're at the high side
-    //Serial.println("High side");
+    Serial.println("High side limit switch hit");
+    stepperCalibrationButtonLastPress = micros();
     stepperVelocity = 0;
     if (stepperCalibrationState == 's') {
       // Then we're done, go to the middle
-      //Serial.println("Done, going to middle");
+      Serial.println("Calibration complete!");
+      Serial.println("Going to middle");
       stepperMaximumPosition = stepperPositionMetres - stepperCalibrationClearance;
       stepperCalibrationState = 'c';
       stepperCalibrationMovementDirection = false;
@@ -472,7 +492,7 @@ void handleCalibration() {
       // We need to go the low side first
       // but we also need to reverse the direction of the motor,
       // since we went the wrong way
-      //Serial.println("Got to the wrong side, going back to the low side");
+      Serial.println("Got to the 'wrong' side limit switch, going back to the low side");
       stepperInvertDirection = !stepperInvertDirection;
       stepperCalibrationMovementDirection = false;
       setStepperPosition(-1);
