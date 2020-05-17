@@ -38,7 +38,7 @@ struct parameterPair {
 // 3 = load cell practice
 // 4 = calibration practice
 byte addresses[][6] = {"1Node", "2Node"};
-int radioNumber = 1;
+int radioNumber = 0;
 
 // STEPPER TIMING
 unsigned long stepperLastStep; //last time we stepped
@@ -93,6 +93,7 @@ unsigned long stepperCalibrationButtonDebounceTime = 1000000; //us
 // LOAD CELL
 const int loadCellBufferSize = 8;
 long int loadCellBuffer[loadCellBufferSize];
+const float loadCellCalibration = 1853554.375;
 
 // Radio
 RF24 radio(RADIO_1, RADIO_2);
@@ -159,9 +160,9 @@ void loop() {
 
     parameterPair sendingParam;
 
-    sendingParam.id = 'C';
+    sendingParam.id = 'L';
     // Remember to check type of variable
-    sendingParam.value.asFloat = 0.0009;
+    sendingParam.value.asFloat = 0.001;
 
     if (!radio.write(&sendingParam, sizeof(sendingParam))) {
       Serial.println("Sending data failed");
@@ -170,12 +171,13 @@ void loop() {
     switch (sendingParam.id) {
       case 'L':
         getLoadCellData();
-        Serial.println("Got load cell data!");
+        //Serial.println("Got load cell data!");
+        printLoadCellBuffer();
         break;
     }
 
     // Delay so we don't spam requests
-    delay(1000);
+    delay(100);
 
   } else if (radioNumber == 1) {
 
@@ -373,6 +375,14 @@ void getLoadCellData() {
 void printLoadCellBuffer() {
   for (int i = 0; i < loadCellBufferSize; i++) {
     Serial.print(loadCellBuffer[i]);
+    Serial.print(", ");
+  }
+  Serial.println("");
+}
+
+void printLoadCellBufferNormalised() {
+  for (int i = 0; i < loadCellBufferSize; i++) {
+    Serial.print((loadCellBuffer[i] - loadCellCalibration)/10000);
     Serial.print(", ");
   }
   Serial.println("");
