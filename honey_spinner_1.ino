@@ -1,5 +1,7 @@
 #include <HX711.h>
 
+#include <printf.h>
+
 #include <SPI.h>
 #include "RF24.h"
 
@@ -38,7 +40,7 @@ struct parameterPair {
 // 3 = load cell practice
 // 4 = calibration practice
 byte addresses[][6] = {"1Node", "2Node"};
-int radioNumber = 0;
+int radioNumber = 1;
 
 // STEPPER TIMING
 unsigned long stepperLastStep; //last time we stepped
@@ -76,7 +78,7 @@ long int setpointSteps; //out current setpoint position in steps
 long int stepperPositionSteps; //the current position of the stepper in steps
 
 // STEPPER CALIBRATION
-char stepperCalibrationState = 'n';
+char stepperCalibrationState = 'c';
 // n not calibrated, starting position
 // s state variable enabled
 // c calibrated
@@ -101,9 +103,27 @@ RF24 radio(RADIO_1, RADIO_2);
 // Load cell
 HX711 loadcell;
 
+void print_bytes(const void *object, size_t size)
+{
+  // This is for C++; in C just drop the static_cast<>() and assign.
+  const unsigned char * const bytes = static_cast<const unsigned char *>(object);
+  size_t i;
+
+  printf("[ ");
+  for (i = 0; i < size; i++)
+  {
+    printf("%02x ", bytes[i]);
+  }
+  printf("]\n");
+}
+
 void setup() {
   // Get everything going
   Serial.begin(115200);
+  printf_begin();
+
+  Serial.println("Serial start!");
+
   radio.begin();
 
   // Set the radio to low
@@ -120,6 +140,8 @@ void setup() {
 
   // Start the radio listening for data
   radio.startListening();
+
+  radio.printDetails();
 
   // Check the chip is connected
   if (radio.isChipConnected()) {
@@ -150,6 +172,13 @@ void setup() {
   }
 
   Serial.println("Finished setup!");
+
+//  parameterPair sendingParam;
+//  sendingParam.id = 's';
+//  // Remember to check type of variable
+//  sendingParam.value.asFloat = 0.001;
+//
+//  print_bytes(&sendingParam, sizeof(sendingParam));
 }
 
 void loop() {
@@ -382,7 +411,7 @@ void printLoadCellBuffer() {
 
 void printLoadCellBufferNormalised() {
   for (int i = 0; i < loadCellBufferSize; i++) {
-    Serial.print((loadCellBuffer[i] - loadCellCalibration)/10000);
+    Serial.print((loadCellBuffer[i] - loadCellCalibration) / 10000);
     Serial.print(", ");
   }
   Serial.println("");
@@ -402,6 +431,7 @@ void handleRadio() {
 
     Serial.print("Recieved instruction id: ");
     Serial.println(recievedParam.id);
+    Serial.println(recievedParam.value.asFloat, 3);
 
     switch (recievedParam.id) {
       case 'u':
@@ -516,3 +546,17 @@ void handleCalibration() {
     }
   }
 }
+
+//void serialEvent() {
+//  while (Serial.available()) {
+//    // get the new byte:
+//    char inChar = (char)Serial.read();
+//    // add it to the inputString:
+//    inputString += inChar;
+//    // if the incoming character is a newline, set a flag so the main loop can
+//    // do something about it:
+//    if (inChar == '\n') {
+//      stringComplete = true;
+//    }
+//  }
+//}
